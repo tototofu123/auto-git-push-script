@@ -1,0 +1,65 @@
+name: Auto README Version
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Skip if only version files changed
+        id: skip_check
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            files=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}")
+            non_version=$(printf "%s\n" "$files" | grep -vE '^(README.md|docs/version-history.md)$' || true)
+            if [ -z "$non_version" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.skip_check.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run version bump
+        if: steps.skip_check.outputs.skip != 'true'
+        run: python scripts/auto_readme_version.py --repo . --event-json "$GITHUB_EVENT_PATH"
+
+      - name: Commit and push changes
+        if: steps.skip_check.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md docs/version-history.md
+          if git diff --cached --quiet; then
+            echo "No version changes to commit"
+            exit 0
+          fi
+          version=$(python - <<'PY'
+import re
+from pathlib import Path
+text = Path("README.md").read_text(encoding="utf-8")
+m = re.search(r"Current Version:\s*(v\d+\.\d+\.\d+)", text)
+print(m.group(1) if m else "v0.0.0")
+PY
+)
+          git commit -m "chore(version): bump README to ${version}"
+          git push
